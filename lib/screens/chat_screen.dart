@@ -3,19 +3,15 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:intl/intl.dart';
 import 'package:emoji_picker_flutter/emoji_picker_flutter.dart';
-import 'package:firebase_messaging/firebase_messaging.dart';
-import 'package:flutter_local_notifications/flutter_local_notifications.dart';
-import 'package:permission_handler/permission_handler.dart';
+import 'package:firebase_storage/firebase_storage.dart';
+import 'package:image_picker/image_picker.dart';
+import 'dart:io';
 
 class ChatScreen extends StatefulWidget {
   final String receiverId;
   final String receiverEmail;
 
-  const ChatScreen({
-    super.key,
-    required this.receiverId,
-    required this.receiverEmail,
-  });
+  const ChatScreen({super.key, required this.receiverId, required this.receiverEmail});
 
   @override
   State<ChatScreen> createState() => _ChatScreenState();
@@ -23,48 +19,14 @@ class ChatScreen extends StatefulWidget {
 
 class _ChatScreenState extends State<ChatScreen> {
   final TextEditingController messageCtrl = TextEditingController();
-  final firestore = FirebaseFirestore.instance;
-  final currentUser = FirebaseAuth.instance.currentUser!;
-  final scrollCtrl = ScrollController();
+  final ScrollController scrollCtrl = ScrollController();
+  final FirebaseFirestore firestore = FirebaseFirestore.instance;
+  final User currentUser = FirebaseAuth.instance.currentUser!;
   bool showEmojiPicker = false;
 
-  final FlutterLocalNotificationsPlugin flutterLocalNotificationsPlugin =
-      FlutterLocalNotificationsPlugin();
-
-  @override
-  void initState() {
-    super.initState();
-
-    const androidInit = AndroidInitializationSettings('@mipmap/ic_launcher');
-    const initSettings = InitializationSettings(android: androidInit);
-    flutterLocalNotificationsPlugin.initialize(initSettings);
-
-    Permission.notification.request();
-
-    FirebaseMessaging.onMessage.listen((RemoteMessage message) {
-      final title = message.notification?.title ?? 'Tin nhắn mới';
-      final body = message.notification?.body ?? 'Bạn có tin nhắn mới';
-
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('$title: $body'),
-          duration: const Duration(seconds: 3),
-        ),
-      );
-    });
-
-    FirebaseMessaging.onMessageOpenedApp.listen((RemoteMessage message) {
-      print('🔔 Người dùng mở app từ thông báo: ${message.data}');
-    });
-  }
-
-  String getChatId() {
-    if (currentUser.uid.hashCode <= widget.receiverId.hashCode) {
-      return '${currentUser.uid}_${widget.receiverId}';
-    } else {
-      return '${widget.receiverId}_${currentUser.uid}';
-    }
-  }
+  String getChatId() => currentUser.uid.hashCode <= widget.receiverId.hashCode
+      ? '${currentUser.uid}_${widget.receiverId}'
+      : '${widget.receiverId}_${currentUser.uid}';
 
   Future<void> sendMessage() async {
     final text = messageCtrl.text.trim();
@@ -73,33 +35,52 @@ class _ChatScreenState extends State<ChatScreen> {
     final chatId = getChatId();
     await firestore.collection('chats').doc(chatId).collection('messages').add({
       'text': text,
+      'imageUrl': '',
       'senderId': currentUser.uid,
       'timestamp': FieldValue.serverTimestamp(),
     });
 
     messageCtrl.clear();
-    setState(() => showEmojiPicker = false);
+    scrollToBottom();
+  }
 
-    await flutterLocalNotificationsPlugin.show(
-      0,
-      'Tin nhắn đã gửi',
-      'Bạn vừa gửi tin nhắn cho ${widget.receiverEmail}',
-      const NotificationDetails(
-        android: AndroidNotificationDetails(
-          'chat_channel',
-          'Chat Notifications',
-          importance: Importance.high,
-          priority: Priority.high,
-        ),
-      ),
-    );
+  Future<void> pickAndSendImage() async {
+    final picker = ImagePicker();
+    final XFile? picked = await picker.pickImage(source: ImageSource.gallery);
+    if (picked == null) return;
 
+    final chatId = getChatId();
+    final file = File(picked.path);
+    final fileName = '${DateTime.now().millisecondsSinceEpoch}.jpg';
+    final ref = FirebaseStorage.instance.ref().child('chat_images/$chatId/$fileName');
+
+    try {
+      final uploadTask = ref.putFile(file);
+      final snapshot = await uploadTask.whenComplete(() {});
+      final imgUrl = await snapshot.ref.getDownloadURL();
+
+      await firestore.collection('chats').doc(chatId).collection('messages').add({
+        'text': '',
+        'imageUrl': imgUrl,
+        'senderId': currentUser.uid,
+        'timestamp': FieldValue.serverTimestamp(),
+      });
+
+      scrollToBottom();
+    } catch (e) {
+      print('❌ Lỗi upload ảnh: $e');
+    }
+  }
+
+  void scrollToBottom() {
     Future.delayed(const Duration(milliseconds: 100), () {
-      scrollCtrl.animateTo(
-        0,
-        duration: const Duration(milliseconds: 200),
-        curve: Curves.easeOut,
-      );
+      if (scrollCtrl.hasClients) {
+        scrollCtrl.animateTo(
+          0,
+          duration: const Duration(milliseconds: 200),
+          curve: Curves.easeOut,
+        );
+      }
     });
   }
 
@@ -129,10 +110,7 @@ class _ChatScreenState extends State<ChatScreen> {
                   .orderBy('timestamp', descending: true)
                   .snapshots(),
               builder: (context, snapshot) {
-                if (!snapshot.hasData) {
-                  return const Center(child: CircularProgressIndicator());
-                }
-
+                if (!snapshot.hasData) return const Center(child: CircularProgressIndicator());
                 final messages = snapshot.data!.docs;
 
                 return ListView.builder(
@@ -143,43 +121,56 @@ class _ChatScreenState extends State<ChatScreen> {
                     final msg = messages[index];
                     final isMe = msg['senderId'] == currentUser.uid;
                     final time = msg['timestamp'] != null
-                        ? DateFormat('HH:mm').format(
-                            (msg['timestamp'] as Timestamp).toDate(),
-                          )
+                        ? DateFormat('HH:mm').format((msg['timestamp'] as Timestamp).toDate())
                         : '';
 
                     return Align(
-                      alignment:
-                          isMe ? Alignment.centerRight : Alignment.centerLeft,
+                      alignment: isMe ? Alignment.centerRight : Alignment.centerLeft,
                       child: Container(
-                        margin: const EdgeInsets.symmetric(
-                            horizontal: 12, vertical: 6),
+                        margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
                         padding: const EdgeInsets.all(10),
                         decoration: BoxDecoration(
-                          color:
-                              isMe ? Colors.indigo[200] : Colors.grey.shade300,
+                          color: isMe ? Colors.indigo[200] : Colors.grey.shade300,
                           borderRadius: BorderRadius.only(
                             topLeft: const Radius.circular(14),
                             topRight: const Radius.circular(14),
-                            bottomLeft:
-                                isMe ? const Radius.circular(14) : Radius.zero,
-                            bottomRight:
-                                isMe ? Radius.zero : const Radius.circular(14),
+                            bottomLeft: isMe ? const Radius.circular(14) : Radius.zero,
+                            bottomRight: isMe ? Radius.zero : const Radius.circular(14),
                           ),
                         ),
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.end,
                           children: [
-                            Text(msg['text'],
-                                style: const TextStyle(fontSize: 16)),
+                            if (msg['imageUrl'] != null && msg['imageUrl'] != '')
+                              GestureDetector(
+                                onTap: () => showDialog(
+                                  context: context,
+                                  builder: (_) => Dialog(
+                                    child: Image.network(msg['imageUrl']),
+                                  ),
+                                ),
+                                child: ClipRRect(
+                                  borderRadius: BorderRadius.circular(14),
+                                  child: Image.network(
+                                    msg['imageUrl'],
+                                    width: 200,
+                                    height: 200,
+                                    fit: BoxFit.cover,
+                                    loadingBuilder: (context, child, loadingProgress) {
+                                      if (loadingProgress == null) return child;
+                                      return SizedBox(
+                                        width: 200,
+                                        height: 200,
+                                        child: Center(child: CircularProgressIndicator()),
+                                      );
+                                    },
+                                  ),
+                                ),
+                              )
+                            else
+                              Text(msg['text'], style: const TextStyle(fontSize: 16)),
                             const SizedBox(height: 4),
-                            Text(
-                              time,
-                              style: TextStyle(
-                                color: Colors.grey[600],
-                                fontSize: 11,
-                              ),
-                            ),
+                            Text(time, style: TextStyle(color: Colors.grey[600], fontSize: 11)),
                           ],
                         ),
                       ),
@@ -196,10 +187,11 @@ class _ChatScreenState extends State<ChatScreen> {
               children: [
                 IconButton(
                   icon: const Icon(Icons.emoji_emotions, color: Colors.indigo),
-                  onPressed: () {
-                    FocusScope.of(context).unfocus();
-                    setState(() => showEmojiPicker = !showEmojiPicker);
-                  },
+                  onPressed: () => setState(() => showEmojiPicker = !showEmojiPicker),
+                ),
+                IconButton(
+                  icon: const Icon(Icons.image, color: Colors.indigo),
+                  onPressed: pickAndSendImage,
                 ),
                 Expanded(
                   child: TextField(
@@ -211,10 +203,7 @@ class _ChatScreenState extends State<ChatScreen> {
                     ),
                   ),
                 ),
-                IconButton(
-                  icon: const Icon(Icons.send, color: Colors.indigo),
-                  onPressed: sendMessage,
-                ),
+                IconButton(icon: const Icon(Icons.send, color: Colors.indigo), onPressed: sendMessage),
               ],
             ),
           ),
@@ -223,32 +212,7 @@ class _ChatScreenState extends State<ChatScreen> {
               height: 250,
               child: EmojiPicker(
                 textEditingController: messageCtrl,
-                onEmojiSelected: (Category? category, Emoji emoji) {
-                  messageCtrl
-                    ..text += emoji.emoji
-                    ..selection = TextSelection.fromPosition(
-                      TextPosition(offset: messageCtrl.text.length),
-                    );
-                },
-                onBackspacePressed: () {
-                  if (messageCtrl.text.isNotEmpty) {
-                    messageCtrl.text =
-                        messageCtrl.text.characters.skipLast(1).toString();
-                  }
-                },
-                config: const Config(
-                  height: 256,
-                  checkPlatformCompatibility: true,
-                  emojiViewConfig: EmojiViewConfig(
-                    columns: 7,
-                    emojiSizeMax: 24,
-                    backgroundColor: Colors.white,
-                  ),
-                  categoryViewConfig: CategoryViewConfig(
-                    indicatorColor: Colors.indigo,
-                    iconColorSelected: Colors.indigo,
-                  ),
-                ),
+                config: const Config(height: 256, emojiViewConfig: EmojiViewConfig(columns: 7)),
               ),
             ),
         ],
