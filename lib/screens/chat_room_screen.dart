@@ -2,6 +2,10 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 
+// Import model và widget mới
+import '../models/message_model.dart';
+import '../widgets/message_bubble.dart';
+
 class ChatRoomScreen extends StatefulWidget {
   final String chatId;
   final String chatTitle;
@@ -43,6 +47,8 @@ class _ChatRoomScreenState extends State<ChatRoomScreen> {
       'text': text,
       'senderId': user.uid,
       'createdAt': FieldValue.serverTimestamp(),
+      'isDeleted': false,
+      'deletedFor': [],
     });
 
     await chatDoc.update({
@@ -59,6 +65,7 @@ class _ChatRoomScreenState extends State<ChatRoomScreen> {
       appBar: AppBar(
         title: Text(widget.chatTitle),
         backgroundColor: Colors.indigo,
+        foregroundColor: Colors.white,
       ),
       body: Column(
         children: [
@@ -78,43 +85,12 @@ class _ChatRoomScreenState extends State<ChatRoomScreen> {
                   reverse: true,
                   itemCount: docs.length,
                   itemBuilder: (context, index) {
-                    final data = docs[index].data() as Map<String, dynamic>;
-                    final isMe = data['senderId'] == user.uid;
-                    final text = data['text'] ?? '';
-                    final ts = data['createdAt'] as Timestamp?;
-                    final time = ts?.toDate();
-
-                    return Align(
-                      alignment:
-                          isMe ? Alignment.centerRight : Alignment.centerLeft,
-                      child: Container(
-                        margin: const EdgeInsets.symmetric(
-                            vertical: 6, horizontal: 12),
-                        padding: const EdgeInsets.all(12),
-                        constraints: BoxConstraints(
-                          maxWidth: MediaQuery.of(context).size.width * 0.7,
-                        ),
-                        decoration: BoxDecoration(
-                          color:
-                              isMe ? Colors.indigo[200] : Colors.grey.shade300,
-                          borderRadius: BorderRadius.circular(12),
-                        ),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.end,
-                          children: [
-                            Text(text),
-                            const SizedBox(height: 6),
-                            if (time != null)
-                              Text(
-                                '${time.hour.toString().padLeft(2, '0')}:${time.minute.toString().padLeft(2, '0')}',
-                                style: const TextStyle(
-                                  fontSize: 10,
-                                  color: Colors.black54,
-                                ),
-                              ),
-                          ],
-                        ),
-                      ),
+                    final message = Message.fromDoc(docs[index]);
+                    
+                    return MessageBubble(
+                      message: message,
+                      currentUserId: user.uid,
+                      chatId: widget.chatId,
                     );
                   },
                 );
@@ -135,7 +111,9 @@ class _ChatRoomScreenState extends State<ChatRoomScreen> {
                         border: OutlineInputBorder(
                           borderRadius: BorderRadius.all(Radius.circular(24)),
                         ),
+                        contentPadding: EdgeInsets.symmetric(horizontal: 16),
                       ),
+                      onSubmitted: (_) => _send(),
                     ),
                   ),
                 ),
@@ -151,5 +129,11 @@ class _ChatRoomScreenState extends State<ChatRoomScreen> {
         ],
       ),
     );
+  }
+
+  @override
+  void dispose() {
+    _ctrl.dispose();
+    super.dispose();
   }
 }

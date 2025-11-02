@@ -1,11 +1,14 @@
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
-import 'package:intl/intl.dart';
 import 'package:emoji_picker_flutter/emoji_picker_flutter.dart';
 import 'package:firebase_storage/firebase_storage.dart';
 import 'package:image_picker/image_picker.dart';
 import 'dart:io';
+
+// Import model và widget mới
+import '../models/message_model.dart';
+import '../widgets/message_bubble.dart';
 
 class ChatScreen extends StatefulWidget {
   final String receiverId;
@@ -31,13 +34,15 @@ class _ChatScreenState extends State<ChatScreen> {
   Future<void> sendMessage() async {
     final text = messageCtrl.text.trim();
     if (text.isEmpty) return;
-
     final chatId = getChatId();
+
     await firestore.collection('chats').doc(chatId).collection('messages').add({
       'text': text,
       'imageUrl': '',
       'senderId': currentUser.uid,
       'timestamp': FieldValue.serverTimestamp(),
+      'isDeleted': false,
+      'deletedFor': [],
     });
 
     messageCtrl.clear();
@@ -55,20 +60,22 @@ class _ChatScreenState extends State<ChatScreen> {
     final ref = FirebaseStorage.instance.ref().child('chat_images/$chatId/$fileName');
 
     try {
-      final uploadTask = ref.putFile(file);
-      final snapshot = await uploadTask.whenComplete(() {});
-      final imgUrl = await snapshot.ref.getDownloadURL();
-
+      await ref.putFile(file);
+      final imgUrl = await ref.getDownloadURL();
       await firestore.collection('chats').doc(chatId).collection('messages').add({
         'text': '',
         'imageUrl': imgUrl,
         'senderId': currentUser.uid,
         'timestamp': FieldValue.serverTimestamp(),
+        'isDeleted': false,
+        'deletedFor': [],
       });
-
       scrollToBottom();
     } catch (e) {
       print('❌ Lỗi upload ảnh: $e');
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Lỗi upload ảnh: $e')),
+      );
     }
   }
 
@@ -118,62 +125,13 @@ class _ChatScreenState extends State<ChatScreen> {
                   controller: scrollCtrl,
                   itemCount: messages.length,
                   itemBuilder: (context, index) {
-                    final msg = messages[index];
-                    final isMe = msg['senderId'] == currentUser.uid;
-                    final time = msg['timestamp'] != null
-                        ? DateFormat('HH:mm').format((msg['timestamp'] as Timestamp).toDate())
-                        : '';
-
-                    return Align(
-                      alignment: isMe ? Alignment.centerRight : Alignment.centerLeft,
-                      child: Container(
-                        margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                        padding: const EdgeInsets.all(10),
-                        decoration: BoxDecoration(
-                          color: isMe ? Colors.indigo[200] : Colors.grey.shade300,
-                          borderRadius: BorderRadius.only(
-                            topLeft: const Radius.circular(14),
-                            topRight: const Radius.circular(14),
-                            bottomLeft: isMe ? const Radius.circular(14) : Radius.zero,
-                            bottomRight: isMe ? Radius.zero : const Radius.circular(14),
-                          ),
-                        ),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.end,
-                          children: [
-                            if (msg['imageUrl'] != null && msg['imageUrl'] != '')
-                              GestureDetector(
-                                onTap: () => showDialog(
-                                  context: context,
-                                  builder: (_) => Dialog(
-                                    child: Image.network(msg['imageUrl']),
-                                  ),
-                                ),
-                                child: ClipRRect(
-                                  borderRadius: BorderRadius.circular(14),
-                                  child: Image.network(
-                                    msg['imageUrl'],
-                                    width: 200,
-                                    height: 200,
-                                    fit: BoxFit.cover,
-                                    loadingBuilder: (context, child, loadingProgress) {
-                                      if (loadingProgress == null) return child;
-                                      return SizedBox(
-                                        width: 200,
-                                        height: 200,
-                                        child: Center(child: CircularProgressIndicator()),
-                                      );
-                                    },
-                                  ),
-                                ),
-                              )
-                            else
-                              Text(msg['text'], style: const TextStyle(fontSize: 16)),
-                            const SizedBox(height: 4),
-                            Text(time, style: TextStyle(color: Colors.grey[600], fontSize: 11)),
-                          ],
-                        ),
-                      ),
+                    final msgDoc = messages[index];
+                    final message = Message.fromDoc(msgDoc);
+                    
+                    return MessageBubble(
+                      message: message,
+                      currentUserId: currentUser.uid,
+                      chatId: chatId,
                     );
                   },
                 );
@@ -203,7 +161,10 @@ class _ChatScreenState extends State<ChatScreen> {
                     ),
                   ),
                 ),
-                IconButton(icon: const Icon(Icons.send, color: Colors.indigo), onPressed: sendMessage),
+                IconButton(
+                  icon: const Icon(Icons.send, color: Colors.indigo), 
+                  onPressed: sendMessage
+                ),
               ],
             ),
           ),
